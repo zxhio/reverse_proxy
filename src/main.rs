@@ -1,29 +1,33 @@
-use std::net::{Shutdown, TcpListener, TcpStream};
-use std::thread;
+use async_std::io;
+use async_std::net::{Shutdown, TcpListener, TcpStream};
+use async_std::prelude::*;
+use async_std::task;
 
-fn main() -> std::io::Result<()> {
+fn main() -> io::Result<()> {
     let local_addr = "[::]:8086";
-    let upstream_addr = "127.0.0.1:8000";
+    let upstream_addr: &str = "127.0.0.1:8000";
 
-    serve(local_addr, upstream_addr)?;
+    task::block_on(serve(local_addr, upstream_addr))?;
 
     Ok(())
 }
 
-fn serve(addr: &str, upstream_addr: &str) -> std::io::Result<()> {
-    let listener = TcpListener::bind(addr)?;
+async fn serve(addr: &str, upstream_addr: &'static str) -> io::Result<()> {
+    let listener = TcpListener::bind(addr).await?;
 
     println!("Listen on {}", listener.local_addr()?);
 
-    for stream in listener.incoming() {
+    let mut incoming = listener.incoming();
+    while let Some(stream) = incoming.next().await {
         let stream = stream?;
         let conn = TcpStream::connect(upstream_addr)
-            .map(|upstream| thread::spawn(move || concat_connection(stream, upstream)));
+            .await
+            .map(|upstream| task::spawn(concat_connection(stream, upstream)));
 
         match conn {
             Ok(_) => {}
             Err(e) => {
-                println!("Fail to proxy stream, {}", e)
+                println!("{}", e)
             }
         }
     }
@@ -31,18 +35,18 @@ fn serve(addr: &str, upstream_addr: &str) -> std::io::Result<()> {
     Ok(())
 }
 
-fn concat_connection(stream: TcpStream, upstream: TcpStream) -> std::io::Result<()> {
+async fn concat_connection(stream: TcpStream, upstream: TcpStream) -> io::Result<()> {
     println!(
         "New connection from {} to {}",
         stream.peer_addr()?.to_string(),
         upstream.peer_addr()?.to_string(),
     );
 
-    let (mut r_stream, mut w_stream) = (stream.try_clone()?, stream.try_clone()?);
-    let (mut r_upstream, mut w_upstream) = (upstream.try_clone()?, upstream.try_clone()?);
+    let (mut r_stream, mut w_stream) = (stream.clone(), stream.clone());
+    let (mut r_upstream, mut w_upstream) = (upstream.clone(), upstream.clone());
 
-    let j1 = thread::spawn(move || {
-        match std::io::copy(&mut r_stream, &mut w_upstream) {
+    task::spawn(async move {
+        match io::copy(&mut r_stream, &mut w_upstream).await {
             Ok(n) => {
                 println!("Copy {} byte to upstream", n)
             }
@@ -59,8 +63,8 @@ fn concat_connection(stream: TcpStream, upstream: TcpStream) -> std::io::Result<
         }
     });
 
-    let j2 = thread::spawn(move || {
-        match std::io::copy(&mut r_upstream, &mut w_stream) {
+    task::spawn(async move {
+        match io::copy(&mut r_upstream, &mut w_stream).await {
             Ok(n) => {
                 println!("Copy {} byte from upstream", n)
             }
@@ -76,9 +80,6 @@ fn concat_connection(stream: TcpStream, upstream: TcpStream) -> std::io::Result<
             }
         }
     });
-
-    j1.join().unwrap();
-    j2.join().unwrap();
 
     Ok(())
 }
