@@ -1,9 +1,11 @@
 use clap::{Arg, Command};
 use log::{error, info};
 use serde::{Deserialize, Serialize};
+use std::fmt;
 use std::fs::File;
 use std::io::{Read, Write};
-use std::process::exit;
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::str::FromStr;
 use tokio::io::{self, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 
@@ -20,6 +22,55 @@ struct Config {
 
 const DEFAULT_CONF_PATH: &str = "/etc/reverse_proxy/config.json";
 const DEFAULT_LOG_PATH: &str = "/var/log/reverse_proxy.log";
+
+#[derive(Debug)]
+pub enum ReverseProxyError {
+    NoSuchAddressList,
+    NoSuchAddress(&'static str),
+    InvalidAddress(&'static str, String),
+}
+
+impl fmt::Display for ReverseProxyError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ReverseProxyError::NoSuchAddressList => write!(f, "No such address list"),
+            ReverseProxyError::NoSuchAddress(addr_type) => {
+                write!(f, "No such {} address", addr_type)
+            }
+            ReverseProxyError::InvalidAddress(addr_type, addr) => {
+                if addr_type.is_empty() {
+                    write!(f, "Invalid address '{}'", addr)
+                } else {
+                    write!(f, "Invalid {}address '{}'", addr_type, addr)
+                }
+            }
+        }
+    }
+}
+
+impl std::error::Error for ReverseProxyError {}
+
+impl From<ReverseProxyError> for io::Error {
+    fn from(err: ReverseProxyError) -> io::Error {
+        match err {
+            ReverseProxyError::NoSuchAddressList => {
+                std::io::Error::new(io::ErrorKind::InvalidData, "No such address list")
+            }
+            ReverseProxyError::NoSuchAddress(addr_type) => std::io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("No such {} address", addr_type),
+            ),
+            ReverseProxyError::InvalidAddress(addr_type, addr) => std::io::Error::new(
+                io::ErrorKind::InvalidData,
+                if addr_type.is_empty() {
+                    format!("Invalid address '{}'", addr)
+                } else {
+                    format!("Invalid {} address '{}'", addr_type, addr)
+                },
+            ),
+        }
+    }
+}
 
 struct LoggerWriter {
     pub f: file_rotate::FileRotate<file_rotate::suffix::AppendTimestamp>,
@@ -61,7 +112,7 @@ async fn main() -> io::Result<()> {
                 .short('l')
                 .long("listen-addr")
                 .value_name("LISTEN_ADDR")
-                .help("Proxy listen address, format ip:port")
+                .help("Proxy listen address, format 'ip:port' or 'port'")
                 .num_args(1)
                 .required(false),
         )
@@ -70,7 +121,7 @@ async fn main() -> io::Result<()> {
                 .short('r')
                 .long("remote-addr")
                 .value_name("REMOTE_ADDR")
-                .help("Proxy remote address, format ip:port")
+                .help("Proxy remote address, format 'ip:port'")
                 .num_args(1)
                 .required(false),
         )
@@ -107,30 +158,27 @@ async fn main() -> io::Result<()> {
     let dump_conf_opt = matches.get_one::<String>("dump-config");
     let log_path_opt = matches.get_one::<String>("log-path");
 
-    let mut listen_addr = String::new();
-    let mut remote_addr = String::new();
-    if let Some(addr) = listen_addr_opt {
-        listen_addr = addr.to_string();
-    }
-    if let Some(addr) = remote_addr_opt {
-        remote_addr = addr.to_string();
-    }
-
     let mut addr_pairs = Vec::<AddrPair>::new();
 
+    let empty_str = String::new();
+    let listen_addr = listen_addr_opt.unwrap_or(&empty_str).to_string();
+    let remote_addr = remote_addr_opt.unwrap_or(&empty_str).to_string();
+
+    let mut is_command_line = false;
     // From command args
-    if !listen_addr.is_empty() && !remote_addr.is_empty() {
+    if !listen_addr.is_empty() || !remote_addr.is_empty() {
+        if listen_addr.is_empty() {
+            return Err(ReverseProxyError::NoSuchAddress("listen").into());
+        }
+        if remote_addr.is_empty() {
+            return Err(ReverseProxyError::NoSuchAddress("remote").into());
+        }
+
+        is_command_line = true;
         addr_pairs.push(AddrPair {
             listen_addr,
             remote_addr,
         });
-
-        let env = env_logger::Env::new().filter_or(env_logger::DEFAULT_FILTER_ENV, "info");
-        env_logger::Builder::from_env(env)
-            .format_level(true)
-            .format_timestamp_millis()
-            .format_target(false)
-            .init();
     } else {
         // From config.json
         let conf_path_def = String::from(DEFAULT_CONF_PATH);
@@ -140,34 +188,21 @@ async fn main() -> io::Result<()> {
         file.read_to_string(&mut contents)?;
         let mut c: Config = serde_json::from_str(&contents)?;
         addr_pairs.append(&mut c.addr_pair_list);
-
-        let log_path_def = String::from(DEFAULT_LOG_PATH);
-        let log_path = log_path_opt.unwrap_or(&log_path_def);
-        let logger_writer = LoggerWriter::new(log_path);
-        let env = env_logger::Env::new().filter_or(env_logger::DEFAULT_FILTER_ENV, "info");
-        env_logger::Builder::from_env(env)
-            .format_level(true)
-            .format_timestamp_millis()
-            .format_target(false)
-            .target(env_logger::Target::Pipe(Box::new(logger_writer)))
-            .init();
     }
 
     if let Some(dump_opt) = dump_conf_opt {
-        return dump_config(dump_opt.to_string(), addr_pairs);
+        dump_config(dump_opt.to_string(), addr_pairs)?;
+        return Ok(());
     }
 
-    if addr_pairs.is_empty() {
-        error!("No such proxy addr pairs");
-        exit(2);
-    }
-
+    set_logging(log_path_opt, is_command_line);
     info!("=== Reverse Proxy start ===");
 
+    let addresses = to_sock_addresses(&addr_pairs)?;
+
     let mut handles = vec![];
-    for pair in addr_pairs {
-        let (listen_addr, remote_addr) = (pair.listen_addr, pair.remote_addr);
-        let handle = tokio::spawn(serve(listen_addr, remote_addr));
+    for pair in addresses {
+        let handle = tokio::spawn(serve(pair.listen_addr, pair.remote_addr));
         handles.push(handle);
     }
     for handle in handles {
@@ -177,19 +212,18 @@ async fn main() -> io::Result<()> {
     Ok(())
 }
 
-//  A  <--- uconn --->   B   <--- rconn --->  C
-// uaddr_r       uaddr_l   raddr_l         raddr_r
-
-async fn serve(listen_addr: String, remote_addr: String) -> io::Result<()> {
+//  User  <---- uconn ---->   ReverseProxy   <---- rconn ---->  Upstream
+//      uaddr_r        uaddr_l             raddr_l         raddr_r
+async fn serve(listen_addr: SocketAddr, remote_addr: SocketAddr) -> io::Result<()> {
     let listener = TcpListener::bind(&listen_addr).await?;
-    info!("Listen on {}", listen_addr);
+    info!("Listen on addr={}", listen_addr);
 
     loop {
         match listener.accept().await {
             Ok((mut uconn, uaddr_r)) => {
-                let uaddr_l: String = match uconn.local_addr() {
-                    Ok(addr) => addr.to_string(),
-                    Err(_) => remote_addr.clone(),
+                let uaddr_l = match uconn.local_addr() {
+                    Ok(addr) => addr,
+                    Err(_) => remote_addr,
                 };
 
                 info!(
@@ -197,7 +231,7 @@ async fn serve(listen_addr: String, remote_addr: String) -> io::Result<()> {
                     uaddr_r, uaddr_l, remote_addr
                 );
 
-                match TcpStream::connect(&remote_addr).await {
+                match TcpStream::connect(remote_addr).await {
                     Ok(mut rconn) => {
                         let raddr_l: String = match rconn.local_addr() {
                             Ok(addr) => addr.to_string(),
@@ -256,4 +290,71 @@ fn dump_config(dump_opt: String, addr_pairs: Vec<AddrPair>) -> io::Result<()> {
     println!("{}", data);
 
     Ok(())
+}
+
+fn set_logging(log_path_opt: Option<&String>, is_command_line: bool) {
+    let env = env_logger::Env::new().filter_or(env_logger::DEFAULT_FILTER_ENV, "info");
+    let mut builder = env_logger::Builder::from_env(env);
+
+    if !is_command_line {
+        let log_path_def = String::from(DEFAULT_LOG_PATH);
+        let log_path = log_path_opt.unwrap_or(&log_path_def);
+        let logger_writer = LoggerWriter::new(log_path);
+        builder.target(env_logger::Target::Pipe(Box::new(logger_writer)));
+    }
+
+    builder
+        .format_level(true)
+        .format_timestamp_millis()
+        .format_target(false)
+        .init();
+}
+
+struct SocketAddrPair {
+    listen_addr: SocketAddr,
+    remote_addr: SocketAddr,
+}
+
+fn to_sock_addresses(pairs: &Vec<AddrPair>) -> Result<Vec<SocketAddrPair>, ReverseProxyError> {
+    let mut addresses = vec![];
+    for pair in pairs {
+        let laddr = to_sock_address(&pair.listen_addr)?;
+        if laddr.port() == 0 {
+            return Err(ReverseProxyError::InvalidAddress(
+                "listen",
+                pair.remote_addr.to_string(),
+            ));
+        }
+
+        let raddr = to_sock_address(&pair.remote_addr)?;
+        if raddr.port() == 0 || raddr.ip().is_unspecified() {
+            return Err(ReverseProxyError::InvalidAddress(
+                "remote",
+                pair.remote_addr.to_string(),
+            ));
+        }
+
+        addresses.push(SocketAddrPair {
+            listen_addr: laddr,
+            remote_addr: raddr,
+        })
+    }
+    Ok(addresses)
+}
+
+fn to_sock_address(s: &str) -> Result<SocketAddr, ReverseProxyError> {
+    // Try to parse the full address
+    if let Ok(addr) = SocketAddr::from_str(s) {
+        return Ok(addr);
+    }
+
+    // If full address parsing fails, try to parse as a port number
+    if let Ok(port) = s.parse::<u16>() {
+        // Create a SocketAddrV4 using 0.0.0.0 as the default IP address
+        let socket_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)), port);
+        return Ok(socket_addr);
+    }
+
+    // Return an error if neither parsing succeeds
+    Err(ReverseProxyError::InvalidAddress("", s.to_string()))
 }

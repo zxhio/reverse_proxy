@@ -4,15 +4,22 @@ A simple reverse proxy written in Rust.
 
 ## Usage
 
+See `reverse_proxy --help`
+
 ### Command line
 
 For easy use on the command line, parameters are provided
-- `-l` `--listen-addr`, Listen address (format ip:port)
-- `-r` `--remote-addr`, Upstream address (format ip:port)
+- `-l` `--listen-addr`, Listen address (format 'ip:port' or 'port')
+- `-r` `--remote-addr`, Upstream address (format 'ip:port')
 
 Here is an example of how to listen on port 10022 and forward it to 127.0.0.1:22
 ```shell
 $ reverse_proxy --listen-addr 0.0.0.0:10022 --remote-addr 127.0.0.1:22
+```
+
+Or not specify ip.
+```shell
+$ reverse_proxy --listen-addr 10022 --remote-addr 127.0.0.1:22
 ```
 
 You can see the logs displayed on the terminal
