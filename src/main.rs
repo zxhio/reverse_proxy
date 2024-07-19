@@ -85,6 +85,7 @@ impl LoggerWriter {
             ),
             file_rotate::ContentLimit::Bytes(1024 * 1024 * 10),
             file_rotate::compression::Compression::None,
+            #[cfg(unix)]
             None,
         );
         LoggerWriter { f }

@@ -1,0 +1,152 @@
+# .github/workflows/cross-compile.yml
+
+name: build reverse_proxy
+
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - '*'
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  build-linux:
+    runs-on: ubuntu-latest
+    env:
+      RUST_BACKTRACE: full
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - x86_64-unknown-linux-musl
+          - aarch64-unknown-linux-musl
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Get Version from Tag
+        id: get_version
+        run: echo "::set-output name=VERSION::${GITHUB_REF##*/}"
+
+      - name: Install Rust toolchains
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+          target: ${{ matrix.target }}
+          override: true
+
+      - name: Build for Linux
+        run: |
+          compile_target=${{ matrix.target }}
+          if [[ "$compile_target" == *"aarch64"* ]]; then
+            cargo install cross
+            cross build --target ${{ matrix.target }} --release
+          else
+            cargo build --target ${{ matrix.target }} --release
+          fi
+
+      - name: Pack Linux artifacts
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          mkdir -p reverse_proxy
+          cp target/${{ matrix.target }}/release/reverse_proxy reverse_proxy
+          tar -czvf reverse_proxy-${{ steps.get_version.outputs.VERSION }}-${{ matrix.target }}.tar.gz reverse_proxy
+
+      - name: Upload Linux artifacts
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: actions/upload-artifact@v3
+        with:
+          name: build-artifacts-reverse_proxy-${{ steps.get_version.outputs.VERSION }}
+          path: reverse_proxy-${{ steps.get_version.outputs.VERSION }}-${{ matrix.target }}.tar.gz
+
+  build-macos:
+    runs-on: macos-latest
+    env:
+      RUST_BACKTRACE: full
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - x86_64-apple-darwin
+          - aarch64-apple-darwin
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Get Version from Tag
+        id: get_version
+        run: echo "::set-output name=VERSION::${GITHUB_REF##*/}"
+
+      - name: Install Rust toolchains
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+          target: ${{ matrix.target }}
+          override: true
+
+      - name: Build for MacOS
+        run: cargo build --target ${{ matrix.target }} --release
+
+      - name: Pack MacOS artifacts
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          mkdir -p reverse_proxy
+          cp target/${{ matrix.target }}/release/reverse_proxy reverse_proxy
+          tar -czvf reverse_proxy-${{ steps.get_version.outputs.VERSION }}-${{ matrix.target }}.tar.gz reverse_proxy
+
+      - name: Upload MacOS artifacts
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: actions/upload-artifact@v3
+        with:
+          name: build-artifacts-reverse_proxy-${{ steps.get_version.outputs.VERSION }}
+          path: reverse_proxy-${{ steps.get_version.outputs.VERSION }}-${{ matrix.target }}.tar.gz
+
+  build-windows:
+    runs-on: windows-latest
+    env:
+      RUST_BACKTRACE: full
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - x86_64-pc-windows-msvc
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Get Version from Tag
+        id: get_version
+        run: echo "::set-output name=VERSION::${GITHUB_REF##*/}"
+
+      - name: Install Rust
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+          target: ${{ matrix.target }}
+          override: true
+
+      - name: Build for Windows
+        run: cargo build --target ${{ matrix.target }} --release
+
+      - name: Pack Windows artifacts
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          mkdir -p reverse_proxy
+          cp target\${{ matrix.target }}\release\reverse_proxy reverse_proxy
+          zip -r reverse_proxy-${{ steps.get_version.outputs.VERSION }}-${{ matrix.target }}.zip reverse_proxy
+
+      - name: Upload Windows artifacts
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: actions/upload-artifact@v3
+        with:
+          name: build-artifacts-reverse_proxy-${{ steps.get_version.outputs.VERSION }}
+          path: reverse_proxy-${{ steps.get_version.outputs.VERSION }}-${{ matrix.target }}.zip
