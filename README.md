@@ -10,7 +10,8 @@ See `reverse_proxy --help`
 
 For easy use on the command line, parameters are provided
 - `-l` `--listen-addr`, Listen address (format 'ip:port' or 'port')
-- `-r` `--remote-addr`, Upstream address (format 'ip:port')
+- `-r` `--remote-addr`, Upstream conn remote address (format 'ip:port')
+- `--local-addr`, Upstream conn local address (format 'ip:port' or 'ip')
 
 Here is an example of how to listen on port 10022 and forward it to 127.0.0.1:22
 ```shell
@@ -20,6 +21,13 @@ $ reverse_proxy --listen-addr 0.0.0.0:10022 --remote-addr 127.0.0.1:22
 Or not specify ip.
 ```shell
 $ reverse_proxy --listen-addr 10022 --remote-addr 127.0.0.1:22
+```
+
+If your nic has two ip such as *192.168.10.10* and *192.168.10.11*, then you can use `--local-addr` specify *192.168.10.10* as conn source address.
+```shell
+$ reverse_proxy --listen-addr 10022 --remote-addr 192.168.11.100:22 --local-addr 192.168.10.10
+# Or
+$ reverse_proxy --listen-addr 10022 --remote-addr 192.168.11.100:22 --local-addr 192.168.10.10:0
 ```
 
 You can see the logs displayed on the terminal

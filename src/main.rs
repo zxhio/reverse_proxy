@@ -7,12 +7,14 @@ use std::io::{Read, Write};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::str::FromStr;
 use tokio::io::{self, AsyncWriteExt};
-use tokio::net::{TcpListener, TcpStream};
+use tokio::net::{TcpListener, TcpSocket, TcpStream};
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Debug)]
 struct AddrPair {
-    remote_addr: String,
     listen_addr: String,
+    remote_addr: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    local_addr: Option<String>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -122,7 +124,15 @@ async fn main() -> io::Result<()> {
                 .short('r')
                 .long("remote-addr")
                 .value_name("REMOTE_ADDR")
-                .help("Proxy remote address, format 'ip:port'")
+                .help("Proxy upstream conn remote address, format 'ip:port'")
+                .num_args(1)
+                .required(false),
+        )
+        .arg(
+            Arg::new("local-addr")
+                .long("local-addr")
+                .value_name("LOCAL_ADDR")
+                .help("Proxy upstream conn local address, format 'ip:port' or 'ip'")
                 .num_args(1)
                 .required(false),
         )
@@ -155,6 +165,7 @@ async fn main() -> io::Result<()> {
 
     let listen_addr_opt = matches.get_one::<String>("listen-addr");
     let remote_addr_opt = matches.get_one::<String>("remote-addr");
+    let local_addr_opt = matches.get_one::<String>("local-addr");
     let conf_path_opt = matches.get_one::<String>("config");
     let dump_conf_opt = matches.get_one::<String>("dump-config");
     let log_path_opt = matches.get_one::<String>("log-path");
@@ -179,6 +190,7 @@ async fn main() -> io::Result<()> {
         addr_pairs.push(AddrPair {
             listen_addr,
             remote_addr,
+            local_addr: local_addr_opt.and_then(|s| Some(s.to_string())),
         });
     } else {
         // From config.json
@@ -203,7 +215,7 @@ async fn main() -> io::Result<()> {
 
     let mut handles = vec![];
     for pair in addresses {
-        let handle = tokio::spawn(serve(pair.listen_addr, pair.remote_addr));
+        let handle = tokio::spawn(serve(pair.listen_addr, pair.remote_addr, pair.local_addr));
         handles.push(handle);
     }
     for handle in handles {
@@ -215,7 +227,11 @@ async fn main() -> io::Result<()> {
 
 //  User  <---- uconn ---->   ReverseProxy   <---- rconn ---->  Upstream
 //      uaddr_r        uaddr_l             raddr_l         raddr_r
-async fn serve(listen_addr: SocketAddr, remote_addr: SocketAddr) -> io::Result<()> {
+async fn serve(
+    listen_addr: SocketAddr,
+    remote_addr: SocketAddr,
+    local_addr: Option<SocketAddr>,
+) -> io::Result<()> {
     let listener = TcpListener::bind(&listen_addr).await?;
     info!("Listen on addr={}", listen_addr);
 
@@ -232,7 +248,8 @@ async fn serve(listen_addr: SocketAddr, remote_addr: SocketAddr) -> io::Result<(
                     uaddr_r, uaddr_l, remote_addr
                 );
 
-                match TcpStream::connect(remote_addr).await {
+                // match TcpStream::connect(remote_addr).await {
+                match connect_with(local_addr, remote_addr).await {
                     Ok(mut rconn) => {
                         let raddr_l: String = match rconn.local_addr() {
                             Ok(addr) => addr.to_string(),
@@ -275,8 +292,9 @@ fn dump_config(dump_opt: String, addr_pairs: Vec<AddrPair>) -> io::Result<()> {
     let mut pairs = Vec::<AddrPair>::new();
     if dump_opt == "default" {
         pairs.push(AddrPair {
-            remote_addr: String::from("<LISTEN_ADDR>"),
             listen_addr: String::from("<REMOTE_ADDR>"),
+            remote_addr: String::from("<LISTEN_ADDR>"),
+            local_addr: None,
         });
     } else if dump_opt == "env" {
         for pair in addr_pairs {
@@ -314,13 +332,14 @@ fn set_logging(log_path_opt: Option<&String>, is_command_line: bool) {
 struct SocketAddrPair {
     listen_addr: SocketAddr,
     remote_addr: SocketAddr,
+    local_addr: Option<SocketAddr>,
 }
 
 fn to_sock_addresses(pairs: &Vec<AddrPair>) -> Result<Vec<SocketAddrPair>, ReverseProxyError> {
     let mut addresses = vec![];
     for pair in pairs {
-        let laddr = to_sock_address(&pair.listen_addr)?;
-        if laddr.port() == 0 {
+        let listen_addr = to_sock_address(&pair.listen_addr)?;
+        if listen_addr.port() == 0 {
             return Err(ReverseProxyError::InvalidAddress(
                 "listen",
                 pair.remote_addr.to_string(),
@@ -335,9 +354,15 @@ fn to_sock_addresses(pairs: &Vec<AddrPair>) -> Result<Vec<SocketAddrPair>, Rever
             ));
         }
 
+        let local_addr_opt = match &pair.local_addr {
+            Some(s) => Some(to_sock_address(&s)?),
+            None => None,
+        };
+
         addresses.push(SocketAddrPair {
-            listen_addr: laddr,
+            listen_addr,
             remote_addr: raddr,
+            local_addr: local_addr_opt,
         })
     }
     Ok(addresses)
@@ -356,6 +381,24 @@ fn to_sock_address(s: &str) -> Result<SocketAddr, ReverseProxyError> {
         return Ok(socket_addr);
     }
 
+    // Only ip
+    if let Ok(ip) = IpAddr::from_str(s) {
+        return Ok(SocketAddr::new(ip, 0));
+    }
+
     // Return an error if neither parsing succeeds
     Err(ReverseProxyError::InvalidAddress("", s.to_string()))
+}
+
+async fn connect_with(laddr: Option<SocketAddr>, raddr: SocketAddr) -> io::Result<TcpStream> {
+    let socket = if raddr.is_ipv6() {
+        TcpSocket::new_v6()?
+    } else {
+        TcpSocket::new_v4()?
+    };
+
+    if let Some(addr) = laddr {
+        socket.bind(addr)?;
+    }
+    Ok(socket.connect(raddr).await?)
 }
