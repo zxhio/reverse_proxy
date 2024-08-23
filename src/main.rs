@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::fs::File;
 use std::io::{Read, Write};
-use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::net::{IpAddr, Ipv6Addr, SocketAddr};
 use std::str::FromStr;
 use tokio::io::{self, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpSocket, TcpStream};
@@ -342,7 +342,7 @@ fn to_sock_addresses(pairs: &Vec<AddrPair>) -> Result<Vec<SocketAddrPair>, Rever
         if listen_addr.port() == 0 {
             return Err(ReverseProxyError::InvalidAddress(
                 "listen",
-                pair.remote_addr.to_string(),
+                pair.listen_addr.to_string(),
             ));
         }
 
@@ -369,19 +369,19 @@ fn to_sock_addresses(pairs: &Vec<AddrPair>) -> Result<Vec<SocketAddrPair>, Rever
 }
 
 fn to_sock_address(s: &str) -> Result<SocketAddr, ReverseProxyError> {
-    // Try to parse the full address
+    // Try to parse the full address (IPv4 or IPv6)
     if let Ok(addr) = SocketAddr::from_str(s) {
         return Ok(addr);
     }
 
     // If full address parsing fails, try to parse as a port number
     if let Ok(port) = s.parse::<u16>() {
-        // Create a SocketAddrV4 using 0.0.0.0 as the default IP address
-        let socket_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)), port);
+        // Create a SocketAddr using unspecified address (::) as the default IP address
+        let socket_addr = SocketAddr::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), port);
         return Ok(socket_addr);
     }
 
-    // Only ip
+    // Only IP (IPv4 or IPv6)
     if let Ok(ip) = IpAddr::from_str(s) {
         return Ok(SocketAddr::new(ip, 0));
     }

@@ -18,7 +18,7 @@ Here is an example of how to listen on port 10022 and forward it to 127.0.0.1:22
 $ reverse_proxy --listen-addr 0.0.0.0:10022 --remote-addr 127.0.0.1:22
 ```
 
-Or not specify ip.
+Or not specify ip (use ipv6 unspecified address).
 ```shell
 $ reverse_proxy --listen-addr 10022 --remote-addr 127.0.0.1:22
 ```
