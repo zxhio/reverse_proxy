@@ -69,18 +69,20 @@ jobs:
           cargo build --target ${{ matrix.target }} --release
         shell: pwsh
 
+
       - name: Pack artifacts
         if: startsWith(github.ref, 'refs/tags/')
         run: |
           mkdir -p procy
-          if [[ "${{ matrix.os }}" != "windows-latest" ]]; then
-            cp target/${{ matrix.target }}/release/procy procy
-            tar -czvf procy-${{ needs.get-build-info.outputs.build_version }}-${{ matrix.target }}.tar.gz procy
-          else
-            cp target/${{ matrix.target }}/release/procy.exe procy
-            Compress-Archive -Path 'procy\*' -DestinationPath "procy-${{ needs.get-build-info.outputs.build_version }}-${{ matrix.target }}.zip"
-          fi
-        shell: pwsh
+          cp target/${{ matrix.target }}/release/procy procy
+          tar -czvf procy-${{ needs.get-build-info.outputs.build_version }}-${{ matrix.target }}.tar.gz procy
+
+      - name: Pack artifacts for Windows
+        if: startsWith(github.ref, 'refs/tags/') && matrix.os == 'windows-latest'
+        run: |
+          mkdir -p procy
+          cp target/${{ matrix.target }}/release/procy.exe procy
+          Compress-Archive -Path 'procy\*' -DestinationPath "procy-${{ needs.get-build-info.outputs.build_version }}-${{ matrix.target }}.zip"
 
       - name: Upload artifacts
         if: startsWith(github.ref, 'refs/tags/')
