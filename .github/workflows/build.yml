@@ -54,27 +54,33 @@ jobs:
           override: true
 
       - name: Build for ${{ matrix.os }}-${{ matrix.target }}
+        if: matrix.os != 'windows-latest'
         run: |
-          if [[ "${{ matrix.os }}" == "windows-latest" ]]; then
-            cargo build --target ${{ matrix.target }} --release
-          elif [[ "${{ matrix.target }}" == *"aarch64"* && "${{ matrix.os }}" == "ubuntu-latest" ]]; then
+          if [[ "${{ matrix.target }}" == *"aarch64"* && "${{ matrix.os }}" == "ubuntu-latest" ]]; then
             cargo install cross
             cross build --target ${{ matrix.target }} --release
           else
             cargo build --target ${{ matrix.target }} --release
           fi
 
+      - name: Build for Windows
+        if: matrix.os == 'windows-latest'
+        run: |
+          cargo build --target ${{ matrix.target }} --release
+        shell: pwsh
+
       - name: Pack artifacts
         if: startsWith(github.ref, 'refs/tags/')
         run: |
           mkdir -p procy
-          if [[ "${{ matrix.os }}" == "windows-latest" ]]; then
-            cp target/${{ matrix.target }}/release/procy.exe procy
-            Compress-Archive -Path 'procy\*' -DestinationPath "procy-${{ needs.get-build-info.outputs.build_version }}-${{ matrix.target }}.zip"
-          else
+          if [[ "${{ matrix.os }}" != "windows-latest" ]]; then
             cp target/${{ matrix.target }}/release/procy procy
             tar -czvf procy-${{ needs.get-build-info.outputs.build_version }}-${{ matrix.target }}.tar.gz procy
+          else
+            cp target/${{ matrix.target }}/release/procy.exe procy
+            Compress-Archive -Path 'procy\*' -DestinationPath "procy-${{ needs.get-build-info.outputs.build_version }}-${{ matrix.target }}.zip"
           fi
+        shell: pwsh
 
       - name: Upload artifacts
         if: startsWith(github.ref, 'refs/tags/')
