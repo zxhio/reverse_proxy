@@ -29,15 +29,7 @@ jobs:
       RUST_BACKTRACE: full
       BUILD_VERSION: ${{ needs.get-build-info.outputs.build_version }}
     strategy:
-      fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
-        target:
-          - x86_64-unknown-linux-musl
-          - aarch64-unknown-linux-musl
-          - x86_64-apple-darwin
-          - aarch64-apple-darwin
-          - x86_64-pc-windows-msvc
         include:
           - os: ubuntu-latest
             target: x86_64-unknown-linux-musl
